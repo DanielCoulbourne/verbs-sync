@@ -136,16 +136,6 @@ protected function schedule(Schedule $schedule)
 }
 ```
 
-## Troubleshooting
-
-If you encounter issues with event syncing:
-
-1. Use the `--dry-run` option to see what would be synced
-2. Check your Laravel logs for errors
-3. Ensure your API token is configured correctly
-4. Verify network connectivity to the source application
-5. Check that event types are not excluded in configuration
-
 ## Testing
 
 This package includes a comprehensive test suite. To run the tests:
@@ -158,19 +148,21 @@ composer test
 
 The test suite covers:
 
-- Unit tests for all core classes and models
-- Feature tests for the command
-- HTTP request handling and error cases
-- Event processing and filtering
-- Database operations
+- Behavior tests for core functionality
+- Command option processing
+- Event filtering and deduplication
+- Error handling scenarios
+- End-to-end flow simulation
 
-### Writing Tests
+## Troubleshooting
 
-If you're extending this package, make sure to add appropriate tests. The test structure follows standard Laravel package testing practices:
+If you encounter issues with event syncing:
 
-- `tests/Unit/`: Unit tests for individual classes
-- `tests/Feature/`: Feature tests for commands and integration
-- `tests/TestCase.php`: Base test case with common setup
+1. Use the `--dry-run` option to see what would be synced
+2. Check your Laravel logs for errors
+3. Ensure your API token is configured correctly
+4. Verify network connectivity to the source application
+5. Check that event types are not excluded in configuration
 
 ## License
 
