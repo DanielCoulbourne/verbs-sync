@@ -1,0 +1,45 @@
+{
+  "name": "danielcoulbourne/verbs-sync",
+  "description": "Simple CLI tool to sync Laravel Verbs events from a remote source",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Daniel Coulbourne",
+      "email": "daniel@tighten.co"
+    }
+  ],
+  "require": {
+    "php": "^8.0",
+    "illuminate/support": "^8.0|^9.0|^10.0",
+    "illuminate/console": "^8.0|^9.0|^10.0",
+    "guzzlehttp/guzzle": "^7.0"
+  },
+  "require-dev": {
+    "orchestra/testbench": "^6.0|^7.0|^8.0",
+    "phpunit/phpunit": "^9.0|^10.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "DanielCoulbourne\\VerbsSync\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "DanielCoulbourne\\VerbsSync\\Tests\\": "tests/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "DanielCoulbourne\\VerbsSync\\VerbsSyncServiceProvider"
+      ]
+    }
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "scripts": {
+    "test": "vendor/bin/phpunit",
+    "test-coverage": "vendor/bin/phpunit --coverage-html coverage"
+  }
+}
