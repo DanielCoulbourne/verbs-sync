@@ -3,6 +3,8 @@
 namespace DanielCoulbourne\VerbsSync;
 
 use DanielCoulbourne\VerbsSync\Commands\PullEventsCommand;
+use DanielCoulbourne\VerbsSync\Commands\SendEventsCommand;
+use DanielCoulbourne\VerbsSync\Commands\ReplayEventsCommand;
 use Illuminate\Support\ServiceProvider;
 
 class VerbsSyncServiceProvider extends ServiceProvider
@@ -22,10 +24,15 @@ class VerbsSyncServiceProvider extends ServiceProvider
         // Load migrations
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
+        // Load routes
+        $this->loadRoutesFrom(__DIR__.'/../routes/api.php');
+
         // Register commands
         if ($this->app->runningInConsole()) {
             $this->commands([
-                \DanielCoulbourne\VerbsSync\Commands\PullEventsCommand::class,
+                PullEventsCommand::class,
+                SendEventsCommand::class,
+                ReplayEventsCommand::class,
             ]);
         }
     }
@@ -49,7 +56,9 @@ class VerbsSyncServiceProvider extends ServiceProvider
 
         // Register the event processor
         $this->app->singleton(EventProcessor::class, function ($app) {
-            return new EventProcessor();
+            return new EventProcessor(
+                $app->make(\Thunk\Verbs\Services\EventService::class)
+            );
         });
 
         // Register the event repository

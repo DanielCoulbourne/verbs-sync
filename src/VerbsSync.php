@@ -2,45 +2,44 @@
 
 namespace DanielCoulbourne\VerbsSync;
 
-use DanielCoulbourne\VerbsSync\Models\SyncEvent;
-use DanielCoulbourne\VerbsSync\Models\SyncLog;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class VerbsSync
 {
     /**
-     * The application instance.
-     *
-     * @var \Illuminate\Foundation\Application
+     * The event processor instance.
      */
-    protected $app;
+    protected EventProcessor $processor;
+
+    /**
+     * The event repository instance.
+     */
+    protected EventRepository $repository;
 
     /**
      * Create a new VerbsSync instance.
-     *
-     * @param  \Illuminate\Foundation\Application  $app
-     * @return void
      */
-    public function __construct($app)
+    public function __construct(EventProcessor $processor, EventRepository $repository)
     {
-        $this->app = $app;
+        $this->processor = $processor;
+        $this->repository = $repository;
     }
 
     /**
      * Pull events from the configured source.
      *
      * @param  array  $filters
-     * @param  \Illuminate\Http\Client\Response|null  $testResponse  For testing purposes
      * @return array
      */
-    public function pullEventsFromSource(array $filters = [], $testResponse = null)
+    public function pullEventsFromSource(array $filters = []): array
     {
-        $sourceUrl = config('verbs-sync.source.url');
-        $apiToken = config('verbs-sync.source.api_token');
+        $sourceUrl = env('VERBS_SYNC_SOURCE_URL');
+        $apiToken = env('VERBS_SYNC_API_TOKEN');
 
-        if (! $sourceUrl) {
+        if (!$sourceUrl) {
             return [
                 'success' => false,
                 'message' => 'Source URL not configured',
@@ -48,17 +47,14 @@ class VerbsSync
         }
 
         try {
-            if ($testResponse) {
-                $response = $testResponse;
-            } else {
-                $response = Http::withToken($apiToken)
-                    ->timeout(30)
-                    ->get($sourceUrl . '/api/verbs/events', $filters);
-            }
+            // Add API token to request header
+            $response = Http::withHeader('Authorization', 'Bearer ' . $apiToken)
+                ->timeout(30)
+                ->get($sourceUrl, $filters);
 
             if ($response->successful()) {
                 $result = $response->json();
-                $events = collect($result['data'] ?? []);
+                $events = collect($result['events'] ?? []);
 
                 if ($events->isEmpty()) {
                     return [
@@ -68,35 +64,61 @@ class VerbsSync
                     ];
                 }
 
-                // Process and store the pulled events
-                $processed = $this->processIncomingEvents($events, $sourceUrl);
+                // Process events
+                $processed = [];
+                $processedCount = 0;
+                $errorCount = 0;
+                $eventTypes = [];
 
-                // Include events in the result for dry run mode
-                if (isset($filters['dry_run']) && $filters['dry_run']) {
-                    $result['events'] = $events;
+                foreach ($events as $event) {
+                    try {
+                        $processedEvent = $this->processor->process($event, $sourceUrl);
+                        $this->repository->store($processedEvent);
+                        $processedCount++;
+
+                        // Track event types for reporting
+                        $eventType = $processedEvent['event_type'];
+                        if (!isset($eventTypes[$eventType])) {
+                            $eventTypes[$eventType] = 0;
+                        }
+                        $eventTypes[$eventType]++;
+                    } catch (\Exception $e) {
+                        Log::error("Failed to process event: {$e->getMessage()}", ['event' => $event]);
+                        $errorCount++;
+                    }
                 }
 
-                $this->recordSyncActivity(
-                    'pull',
-                    'success',
-                    $events->count(),
-                    ['processed' => $processed]
-                );
+                // Record activity
+                DB::table('verbs_sync_logs')->insert([
+                    'operation' => 'pull_events',
+                    'status' => 'success',
+                    'details' => json_encode([
+                        'processed' => $processedCount,
+                        'errors' => $errorCount,
+                    ]),
+                    'events_count' => $processedCount,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
 
                 return [
                     'success' => true,
-                    'message' => "Successfully pulled and processed {$events->count()} events",
-                    'events_count' => $events->count(),
-                    'details' => $processed,
+                    'message' => "Successfully pulled and processed {$processedCount} events",
+                    'events_count' => $processedCount,
+                    'errors' => $errorCount,
+                    'event_types' => $eventTypes,
                 ];
             }
 
-            $this->recordSyncActivity(
-                'pull',
-                'failed',
-                0,
-                ['error' => $response->body()]
-            );
+            // Record failed activity
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'pull_events',
+                'status' => 'failed',
+                'details' => json_encode(['error' => $response->body()]),
+                'events_count' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
             return [
                 'success' => false,
@@ -104,12 +126,15 @@ class VerbsSync
                 'details' => $response->body(),
             ];
         } catch (\Exception $e) {
-            $this->recordSyncActivity(
-                'pull',
-                'error',
-                0,
-                ['exception' => $e->getMessage()]
-            );
+            // Record error
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'pull_events',
+                'status' => 'error',
+                'details' => json_encode(['exception' => $e->getMessage()]),
+                'events_count' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
             return [
                 'success' => false,
@@ -119,91 +144,115 @@ class VerbsSync
     }
 
     /**
-     * Process incoming events from a source.
+     * Send events to a destination.
      *
-     * @param  \Illuminate\Support\Collection  $events
-     * @param  string  $sourceUrl
+     * @param  array  $filters
      * @return array
      */
-    protected function processIncomingEvents(Collection $events, string $sourceUrl)
+    public function sendEvents(array $filters = []): array
     {
-        $results = [
-            'success' => true,
-            'processed' => 0,
-            'skipped' => 0,
-            'errors' => [],
-        ];
+        $destinationUrl = env('VERBS_SYNC_DESTINATION_URL');
+        $apiKey = env('VERBS_SYNC_API_KEY');
+        $appName = env('VERBS_SYNC_APP_NAME', config('app.name'));
 
-        foreach ($events as $event) {
-            try {
-                // Check if event is already processed
-                $existingEvent = SyncEvent::where('event_id', $event['id'])
-                    ->where('source_url', $sourceUrl)
-                    ->first();
-
-                if ($existingEvent) {
-                    $results['skipped']++;
-                    continue;
-                }
-
-                // Create a new sync event record
-                $syncEvent = new SyncEvent([
-                    'event_id' => $event['id'],
-                    'source_url' => $sourceUrl,
-                    'event_type' => $event['type'],
-                    'event_data' => $event['data'],
-                    'sync_metadata' => [
-                        'pulled_at' => now()->toIso8601String(),
-                        'source_url' => $sourceUrl,
-                    ],
-                    'synced_at' => now(),
-                ]);
-
-                $syncEvent->save();
-
-                // Process the event through Verbs
-                $eventProcessor = app(EventProcessor::class);
-                $success = $eventProcessor->processEvent($event, $sourceUrl);
-
-                if (!$success) {
-                    throw new \Exception("Failed to process event ID: {$event['id']}");
-                }
-
-                $results['processed']++;
-            } catch (\Exception $e) {
-                $results['success'] = false;
-                $results['errors'][] = [
-                    'event_id' => $event['id'] ?? 'unknown',
-                    'error' => $e->getMessage(),
-                ];
-
-                Log::error("Error processing synced event: {$e->getMessage()}", [
-                    'event' => $event,
-                    'exception' => $e,
-                ]);
-            }
+        if (!$destinationUrl) {
+            return [
+                'success' => false,
+                'message' => 'Destination URL not configured',
+            ];
         }
 
-        return $results;
-    }
+        try {
+            // Get events to send
+            $query = DB::table('verbs_sync_events');
 
-    /**
-     * Record sync activity for logging and monitoring.
-     *
-     * @param  string  $operation
-     * @param  string  $status
-     * @param  int  $eventsCount
-     * @param  array  $details
-     * @return \DanielCoulbourne\VerbsSync\Models\SyncLog
-     */
-    protected function recordSyncActivity($operation, $status, $eventsCount = 0, array $details = [])
-    {
-        return SyncLog::create([
-            'operation' => $operation,
-            'status' => $status,
-            'events_count' => $eventsCount,
-            'details' => $details,
-        ]);
+            if (!empty($filters['event_type'])) {
+                $query->where('event_type', $filters['event_type']);
+            }
+
+            if (!empty($filters['since'])) {
+                $query->where('created_at', '>=', $filters['since']);
+            }
+
+            $events = $query->limit($filters['limit'] ?? 10)->get();
+
+            if ($events->isEmpty()) {
+                return [
+                    'success' => true,
+                    'message' => 'No events to send',
+                    'events_count' => 0,
+                ];
+            }
+
+            // Format events for sending
+            $formattedEvents = $events->map(function ($event) {
+                return [
+                    'id' => $event->event_id,
+                    'type' => $event->event_type,
+                    'data' => json_decode($event->event_data, true),
+                    'created_at' => $event->created_at,
+                ];
+            })->toArray();
+
+            // Send to destination
+            $response = Http::withHeader('X-Verbs-Sync-Key', $apiKey)
+                ->timeout(30)
+                ->post($destinationUrl, [
+                    'events' => $formattedEvents,
+                    'source_url' => config('app.url'),
+                    'source_name' => $appName,
+                ]);
+
+            if ($response->successful()) {
+                // Record successful activity
+                DB::table('verbs_sync_logs')->insert([
+                    'operation' => 'send_events',
+                    'status' => 'success',
+                    'details' => json_encode($response->json()),
+                    'events_count' => count($formattedEvents),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => "Successfully sent " . count($formattedEvents) . " events",
+                    'events_count' => count($formattedEvents),
+                    'response' => $response->json(),
+                ];
+            }
+
+            // Record failed activity
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'send_events',
+                'status' => 'failed',
+                'details' => json_encode(['error' => $response->body()]),
+                'events_count' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Failed to send events: ' . $response->status(),
+                'details' => $response->body(),
+            ];
+        } catch (\Exception $e) {
+            // Record error
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'send_events',
+                'status' => 'error',
+                'details' => json_encode(['exception' => $e->getMessage()]),
+                'events_count' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Error sending events: ' . $e->getMessage(),
+            ];
+        }
     }
 
     /**
@@ -211,19 +260,34 @@ class VerbsSync
      *
      * @return array
      */
-    public function getSyncStatus()
+    public function getSyncStatus(): array
     {
-        $lastPull = SyncLog::where('operation', 'pull')
+        $lastPull = DB::table('verbs_sync_logs')
+            ->where('operation', 'pull_events')
             ->where('status', 'success')
-            ->latest()
+            ->orderBy('created_at', 'desc')
             ->first();
+
+        $lastSend = DB::table('verbs_sync_logs')
+            ->where('operation', 'send_events')
+            ->where('status', 'success')
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        $totalEvents = DB::table('verbs_sync_events')->count();
 
         return [
             'last_pull' => $lastPull ? [
-                'timestamp' => $lastPull->created_at->toIso8601String(),
+                'timestamp' => $lastPull->created_at,
                 'events_count' => $lastPull->events_count,
             ] : null,
-            'total_synced_events' => SyncEvent::whereNotNull('synced_at')->count(),
+            'last_send' => $lastSend ? [
+                'timestamp' => $lastSend->created_at,
+                'events_count' => $lastSend->events_count,
+            ] : null,
+            'total_synced_events' => $totalEvents,
+            'sync_type' => env('VERBS_SYNC_TYPE', 'destination'),
+            'app_name' => env('VERBS_SYNC_APP_NAME', config('app.name')),
         ];
     }
 }

@@ -3,143 +3,159 @@
 namespace DanielCoulbourne\VerbsSync;
 
 use Illuminate\Support\Collection;
-use Thunk\Verbs\Models\Event;
-use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class EventRepository
 {
     /**
-     * Get events from the source app that should be synced.
+     * Store a processed event.
      *
-     * @param  array  $filters
-     * @return \Illuminate\Support\Collection
+     * @param  array  $eventData
+     * @return array
      */
-    public function getSourceEvents(array $filters = [])
+    public function store(array $eventData): array
     {
-        // This method is for processing locally fetched events
-        // from the remote source application's API response
+        try {
+            // Check if replayed_at column exists, if not add it
+            if (!Schema::hasColumn('verbs_sync_events', 'replayed_at')) {
+                Schema::table('verbs_sync_events', function ($table) {
+                    $table->timestamp('replayed_at')->nullable();
+                });
+            }
 
-        $query = Event::query();
+            // Insert into the verbs_sync_events table
+            $id = DB::table('verbs_sync_events')->insertGetId([
+                'event_id' => $eventData['event_id'],
+                'source_url' => $eventData['source_url'],
+                'event_type' => $eventData['event_type'],
+                'event_data' => $eventData['event_data'],
+                'sync_metadata' => $eventData['sync_metadata'] ?? null,
+                'synced_at' => $eventData['synced_at'] ?? now(),
+                'replayed_at' => null, // New events have not been replayed
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        // Apply filters
-        $query = $this->applyFilters($query, $filters);
+            Log::info("Stored synced event in database", [
+                'event_id' => $eventData['event_id'],
+                'event_type' => $eventData['event_type'],
+            ]);
 
-        // Apply configuration-based filters
-        $query = $this->applyConfigFilters($query);
+            // Record in log table
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'store_event',
+                'status' => 'success',
+                'details' => json_encode([
+                    'event_id' => $eventData['event_id'],
+                    'event_type' => $eventData['event_type'],
+                ]),
+                'events_count' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        // Get the events
-        $events = $query->get();
+            return $eventData;
+        } catch (\Exception $e) {
+            Log::error("Failed to store synced event: {$e->getMessage()}", [
+                'event' => $eventData,
+                'exception' => $e,
+            ]);
 
-        // Format events for syncing
-        return $this->formatEvents($events);
+            // Record in log table
+            DB::table('verbs_sync_logs')->insert([
+                'operation' => 'store_event',
+                'status' => 'error',
+                'details' => json_encode([
+                    'error' => $e->getMessage(),
+                    'event_id' => $eventData['event_id'] ?? 'unknown',
+                ]),
+                'events_count' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            throw $e;
+        }
     }
 
     /**
-     * Apply user-provided filters to the query.
-     *
-     * @param  \Illuminate\Database\Eloquent\Builder  $query
-     * @param  array  $filters
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    protected function applyFilters(Builder $query, array $filters)
-    {
-        // Filter by creation time
-        if (isset($filters['since'])) {
-            $query->where('created_at', '>=', $filters['since']);
-        }
-
-        // Filter by event types
-        if (isset($filters['type']) && is_array($filters['type'])) {
-            $query->whereIn('type', $filters['type']);
-        }
-
-        // Filter by IDs
-        if (isset($filters['ids']) && is_array($filters['ids'])) {
-            $query->whereIn('id', $filters['ids']);
-        }
-
-        // Apply limit
-        if (isset($filters['limit']) && is_numeric($filters['limit'])) {
-            $query->limit((int) $filters['limit']);
-        } else {
-            // Default batch size from config
-            $batchSize = config('verbs-sync.options.batch_size', 100);
-            $query->limit($batchSize);
-        }
-
-        // Order by creation time
-        $query->orderBy('created_at', 'asc');
-
-        return $query;
-    }
-
-    /**
-     * Apply configuration-based filters to the query.
-     *
-     * @param  \Illuminate\Database\Eloquent\Builder  $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    protected function applyConfigFilters(Builder $query)
-    {
-        $includeEvents = config('verbs-sync.events.include', ['*']);
-        $excludeEvents = config('verbs-sync.events.exclude', []);
-
-        // Include specific event types (if not wildcard)
-        if (!in_array('*', $includeEvents)) {
-            $query->whereIn('type', $includeEvents);
-        }
-
-        // Exclude specific event types
-        if (!empty($excludeEvents)) {
-            $query->whereNotIn('type', $excludeEvents);
-        }
-
-        // Only get events that haven't been synced yet
-        // This requires tracking which events have been synced, which could be
-        // implemented through a relationship or separate tracking table
-
-        return $query;
-    }
-
-    /**
-     * Format events for syncing.
-     *
-     * @param  \Illuminate\Support\Collection  $events
-     * @return \Illuminate\Support\Collection
-     */
-    protected function formatEvents(Collection $events)
-    {
-        return $events->map(function ($event) {
-            return [
-                'id' => $event->id,
-                'type' => $event->type,
-                'data' => $event->data,
-                'created_at' => $event->created_at->toIso8601String(),
-                'source_url' => config('app.url'),
-            ];
-        });
-    }
-
-    /**
-     * Find a specific event by ID.
+     * Find an event by its ID.
      *
      * @param  string  $eventId
      * @return array|null
      */
-    public function findEvent($eventId)
+    public function find(string $eventId): ?array
     {
-        $event = Event::find($eventId);
+        return DB::table('verbs_sync_events')
+            ->where('event_id', $eventId)
+            ->first();
+    }
 
-        if (!$event) {
-            return null;
+    /**
+     * Get all events with optional filtering.
+     *
+     * @param  array  $filters
+     * @return \Illuminate\Support\Collection
+     */
+    public function getEvents(array $filters = []): Collection
+    {
+        $query = DB::table('verbs_sync_events');
+
+        if (!empty($filters['event_type'])) {
+            $query->where('event_type', $filters['event_type']);
         }
 
-        return [
-            'id' => $event->id,
-            'type' => $event->type,
-            'data' => $event->data,
-            'created_at' => $event->created_at->toIso8601String(),
-            'source_url' => config('app.url'),
-        ];
+        if (!empty($filters['since'])) {
+            $query->where('created_at', '>=', $filters['since']);
+        }
+
+        // Filter by replay status
+        if (isset($filters['replayed']) && Schema::hasColumn('verbs_sync_events', 'replayed_at')) {
+            if ($filters['replayed'] === true) {
+                $query->whereNotNull('replayed_at');
+            } elseif ($filters['replayed'] === false) {
+                $query->whereNull('replayed_at');
+            }
+        }
+
+        return $query->orderBy('created_at', 'desc')
+            ->limit($filters['limit'] ?? 100)
+            ->get();
+    }
+
+    /**
+     * Mark an event as replayed.
+     *
+     * @param  string  $eventId
+     * @return bool
+     */
+    public function markAsReplayed(string $eventId): bool
+    {
+        try {
+            // Check if replayed_at column exists
+            if (!Schema::hasColumn('verbs_sync_events', 'replayed_at')) {
+                Schema::table('verbs_sync_events', function ($table) {
+                    $table->timestamp('replayed_at')->nullable();
+                });
+            }
+
+            DB::table('verbs_sync_events')
+                ->where('event_id', $eventId)
+                ->update([
+                    'replayed_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Failed to mark event as replayed: {$e->getMessage()}", [
+                'event_id' => $eventId,
+                'exception' => $e,
+            ]);
+
+            return false;
+        }
     }
 }

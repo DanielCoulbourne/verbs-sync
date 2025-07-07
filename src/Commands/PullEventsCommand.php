@@ -2,7 +2,7 @@
 
 namespace DanielCoulbourne\VerbsSync\Commands;
 
-use DanielCoulbourne\VerbsSync\EventSyncer;
+use DanielCoulbourne\VerbsSync\VerbsSync;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -17,7 +17,8 @@ class PullEventsCommand extends Command
                             {--since= : Only pull events since this timestamp (ISO-8601 format)}
                             {--types= : Comma-separated list of event types to pull}
                             {--limit=100 : Maximum number of events to pull}
-                            {--dry-run : Show what would be synced without actually syncing}';
+                            {--dry-run : Show what would be synced without actually syncing}
+                            {--debug : Show additional debug information}';
 
     /**
      * The console command description.
@@ -39,10 +40,10 @@ class PullEventsCommand extends Command
      * @param  \DanielCoulbourne\VerbsSync\VerbsSync  $verbsSync
      * @return void
      */
-    public function __construct(VerbsSync $verbsSync)
+    public function __construct()
     {
         parent::__construct();
-        $this->verbsSync = $verbsSync;
+        $this->verbsSync = app(VerbsSync::class);
     }
 
     /**
@@ -52,12 +53,20 @@ class PullEventsCommand extends Command
      */
     public function handle()
     {
-        if (!config('verbs-sync.source.url')) {
+        $sourceUrl = env('VERBS_SYNC_SOURCE_URL');
+        if (!$sourceUrl) {
             $this->error('Source URL not configured. Please set VERBS_SYNC_SOURCE_URL in your .env file.');
             return 1;
         }
 
-        $this->info('Syncing events from source: ' . config('verbs-sync.source.url'));
+        $this->info('Syncing events from source: ' . $sourceUrl);
+
+        // Debug info
+        if ($this->option('debug')) {
+            $this->info('Debug mode enabled');
+            $this->info('Destination URL: ' . env('APP_URL'));
+            $this->info('Using Verbs version: ' . (class_exists('\Thunk\Verbs\Verbs') ? \Thunk\Verbs\Verbs::VERSION : 'unknown'));
+        }
 
         $filters = $this->getFiltersFromOptions();
 
@@ -77,44 +86,39 @@ class PullEventsCommand extends Command
                     if ($dryRun) {
                         $this->info("Found {$eventsCount} events that would be synced");
 
-                        // Show sample of events that would be synced
-                        if (isset($result['events']) && is_array($result['events'])) {
-                            $this->table(
-                                ['ID', 'Type', 'Created At'],
-                                collect($result['events'])->take(5)->map(function ($event) {
-                                    return [
-                                        $event['id'] ?? 'N/A',
-                                        $event['type'] ?? 'N/A',
-                                        $event['created_at'] ?? 'N/A',
-                                    ];
-                                })->toArray()
-                            );
-
-                            if (count($result['events']) > 5) {
-                                $this->line("...and " . (count($result['events']) - 5) . " more");
-                            }
-                        }
+                        $this->warn('Dry run completed. No events were processed.');
                     } else {
                         $this->info("Successfully synced {$eventsCount} events");
 
-                        if (isset($result['details']) && is_array($result['details'])) {
-                            $this->line("Processed: {$result['details']['processed']} events");
-                            $this->line("Skipped: {$result['details']['skipped']} events (already synced)");
+                        // Events are imported but not dispatched automatically
+                        // Users can replay them later using Verbs replay functionality
+                        if ($this->option('debug')) {
+                            $this->info('Note: Events are imported but not dispatched');
+                            $this->info('Use Verbs replay functionality to process imported events');
+                        }
 
-                            if (!empty($result['details']['errors'])) {
-                                $this->warn("Encountered " . count($result['details']['errors']) . " errors during processing");
+                        if (isset($result['errors']) && $result['errors'] > 0) {
+                            $this->warn("Encountered {$result['errors']} errors during processing");
+                        }
+
+                        // Show info about the types of events
+                        if (isset($result['event_types']) && !empty($result['event_types'])) {
+                            $this->line("Event types processed:");
+                            foreach ($result['event_types'] as $type => $count) {
+                                $this->line("  - {$type}: {$count}");
                             }
+                            $this->warn("Encountered " . count($result['details']['errors']) . " errors during processing");
                         }
                     }
                 } else {
                     $this->line('No new events to sync from source.');
                 }
 
-                return 0;
+                return Command::SUCCESS;
             } else {
                 $this->error('Failed to sync events: ' . ($result['message'] ?? 'Unknown error'));
                 Log::error('Failed to sync events: ' . json_encode($result));
-                return 1;
+                return Command::FAILURE;
             }
         } catch (\Exception $e) {
             $this->error('Error syncing events: ' . $e->getMessage());
@@ -139,7 +143,19 @@ class PullEventsCommand extends Command
         }
 
         if ($types = $this->option('types')) {
-            $filters['type'] = explode(',', $types);
+            $filters['event_type'] = explode(',', $types);
+        }
+
+        // Add debug information if requested
+        if ($this->option('debug')) {
+            $this->info('Using source URL: ' . env('VERBS_SYNC_SOURCE_URL', 'not set'));
+            $this->info('Using API token: ' . (env('VERBS_SYNC_API_TOKEN') ? '[set]' : '[not set]'));
+            $this->info('Filter parameters: ' . json_encode($filters));
+
+            // Check if Verbs is available
+            if (class_exists('\Thunk\Verbs\Facades\Verbs')) {
+                $this->info('Verbs facade is available for replay functionality');
+            }
         }
 
         // Always include a limit to prevent pulling too many events

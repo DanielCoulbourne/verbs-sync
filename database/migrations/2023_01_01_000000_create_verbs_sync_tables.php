@@ -4,14 +4,12 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateVerbsSyncTables extends Migration
+return new class extends Migration
 {
     /**
      * Run the migrations.
-     *
-     * @return void
      */
-    public function up()
+    public function up(): void
     {
         Schema::create('verbs_sync_events', function (Blueprint $table) {
             $table->id();
@@ -21,6 +19,7 @@ class CreateVerbsSyncTables extends Migration
             $table->json('event_data');
             $table->json('sync_metadata')->nullable();
             $table->timestamp('synced_at')->nullable();
+            $table->timestamp('replayed_at')->nullable();
             $table->timestamps();
 
             $table->index(['event_type', 'synced_at']);
@@ -39,12 +38,10 @@ class CreateVerbsSyncTables extends Migration
 
     /**
      * Reverse the migrations.
-     *
-     * @return void
      */
-    public function down()
+    public function down(): void
     {
         Schema::dropIfExists('verbs_sync_logs');
         Schema::dropIfExists('verbs_sync_events');
     }
-}
+};
