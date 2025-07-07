@@ -12,6 +12,9 @@
             <file>./tests/CommandBehaviorTest.php</file>
             <file>./tests/SimulatedEndToEndTest.php</file>
         </testsuite>
+        <testsuite name="Feature">
+            <directory>./tests/Feature</directory>
+        </testsuite>
     </testsuites>
     <coverage processUncoveredFiles="true">
         <include>
