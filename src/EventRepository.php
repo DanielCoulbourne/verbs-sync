@@ -25,7 +25,7 @@ class EventRepository
                 });
             }
 
-            // Insert into the verbs_sync_events table
+            // Insert into the verbs_sync_events table for tracking
             $id = DB::table('verbs_sync_events')->insertGetId([
                 'event_id' => $eventData['event_id'],
                 'source_url' => $eventData['source_url'],
@@ -38,7 +38,21 @@ class EventRepository
                 'updated_at' => now(),
             ]);
 
-            Log::info("Stored synced event in database", [
+            // Also insert directly into verbs_events table
+            DB::table('verbs_events')->insert([
+                'id' => $eventData['event_id'],
+                'type' => $eventData['event_type'],
+                'data' => $eventData['event_data'],
+                'created_at' => now(),
+                'updated_at' => now(),
+                'metadata' => json_encode([
+                    'synced' => true,
+                    'source_url' => $eventData['source_url'],
+                    'original_id' => $eventData['event_id'],
+                ]),
+            ]);
+
+            Log::info("Stored synced event directly in verbs_events table", [
                 'event_id' => $eventData['event_id'],
                 'event_type' => $eventData['event_type'],
             ]);

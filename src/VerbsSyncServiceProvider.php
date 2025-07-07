@@ -56,9 +56,7 @@ class VerbsSyncServiceProvider extends ServiceProvider
 
         // Register the event processor
         $this->app->singleton(EventProcessor::class, function ($app) {
-            return new EventProcessor(
-                $app->make(\Thunk\Verbs\Services\EventService::class)
-            );
+            return new EventProcessor();
         });
 
         // Register the event repository

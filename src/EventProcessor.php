@@ -3,25 +3,18 @@
 namespace DanielCoulbourne\VerbsSync;
 
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class EventProcessor
 {
     /**
-     * The Verbs Event Service.
-     *
-     * @var \Thunk\Verbs\Services\EventService
-     */
-    protected $eventService;
-
-    /**
      * Create a new EventProcessor instance.
      *
-     * @param  \Thunk\Verbs\Services\EventService  $eventService
      * @return void
      */
-    public function __construct(\Thunk\Verbs\Services\EventService $eventService = null)
+    public function __construct()
     {
-        $this->eventService = $eventService ?? app(\Thunk\Verbs\Services\EventService::class);
+        // No dependencies needed
     }
 
     /**
@@ -64,12 +57,15 @@ class EventProcessor
                 'source' => $sourceUrl,
             ]);
 
-            // Process the event through Verbs
-            $this->eventService->dispatch(
-                $type,
-                $data,
-                $metadata
-            );
+            // Directly insert into verbs_events table
+            DB::table('verbs_events')->insert([
+                'id' => $id,
+                'type' => $type,
+                'data' => json_encode($data),
+                'created_at' => $event['created_at'] ?? now(),
+                'updated_at' => now(),
+                'metadata' => json_encode($metadata),
+            ]);
 
             return [
                 'event_id' => $id,
