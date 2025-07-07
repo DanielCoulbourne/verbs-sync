@@ -39,6 +39,10 @@ class EventRepository
             ]);
 
             // Also insert directly into verbs_events table
+            // This is the main purpose of this package - to directly insert events
+            // into the verbs_events table without using the Verbs event processing pipeline
+            // We're intentionally bypassing Verbs' EventService and inserting directly
+            // into the database to avoid any additional processing or validation
             DB::table('verbs_events')->insert([
                 'id' => $eventData['event_id'],
                 'type' => $eventData['event_type'],
